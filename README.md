@@ -1,4 +1,4 @@
-# Setowire
+# Setowire - Python
 
 A lightweight P2P networking library built on UDP. No central servers, no brokers — peers find each other and communicate directly.
 
