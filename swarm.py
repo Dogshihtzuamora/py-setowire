@@ -42,6 +42,18 @@ def _now_ms():
     return time.monotonic() * 1000
 
 
+def _is_local_id_lower(local_id_hex: str, remote_id_hex: str, local_pub_raw: bytes, remote_pub_raw: bytes) -> bool:
+    # The wire handshake carries only 8 bytes of peer id (16 hex chars), so
+    # cross-runtime ordering must compare those truncated ids first.
+    local_short = (local_id_hex or '')[:16]
+    remote_short = (remote_id_hex or '')[:16]
+    if local_short != remote_short:
+        return local_short < remote_short
+    # Extremely rare collision on the truncated id: fall back to full pubkey
+    # bytes for deterministic role selection (Python-Python safety).
+    return (local_pub_raw or b'') < (remote_pub_raw or b'')
+
+
 def _local_ip():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -650,9 +662,7 @@ class Swarm:
         peer              = Peer(self, pid, src)
         peer._their_pub_raw = their_pub_raw
         raw               = derive_session(self._my_x25519['private_key'], their_pub_raw)
-        # Both sides use only the first 8 bytes (16 hex chars) of the ID on the wire,
-        # so the iAmLo comparison must use the same truncated ID to match JS behavior.
-        i_am_lo           = self._id[:16] < pid[:16]
+        i_am_lo           = _is_local_id_lower(self._id, pid, self._my_x25519['pub_raw'], their_pub_raw)
         peer._session     = {
             'send_key':   raw['send_key']  if i_am_lo else raw['recv_key'],
             'recv_key':   raw['recv_key']  if i_am_lo else raw['send_key'],
