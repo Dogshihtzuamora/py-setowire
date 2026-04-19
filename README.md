@@ -108,6 +108,10 @@ asyncio.run(main())
 | `relay` | False | force relay mode regardless of NAT |
 | `bootstrap` | [] | `["host:port"]` bootstrap nodes |
 | `seeds` | [] | additional hardcoded seed peers |
+| `storage` | None | pluggable storage backend (see [Persistent storage](#persistent-storage)) |
+| `store_cache_max` | 10000 | max entries kept in the in-memory cache |
+| `on_save_peers` | None | `(peers) -> None` called when the peer cache is updated |
+| `on_load_peers` | None | `() -> peers` called on startup to restore known peers |
 
 ### `await swarm.join(topic, announce=True, lookup=True)`
 
@@ -119,11 +123,17 @@ Send data to all connected peers. Returns number of peers reached.
 
 ### `swarm.store(key, value)`
 
-Store a value locally and announce it to the mesh.
+Store a value in the local cache, persist it to the storage backend if one is set, and announce to the mesh that you have it.
 
 ### `await swarm.fetch(key, timeout?)`
 
-Fetch a value — returns local copy immediately or pulls from the network.
+Fetch a value. Lookup order:
+
+1. In-memory cache
+2. Storage backend (if set)
+3. Network — sends a WANT to the mesh and waits up to `timeout` ms (default 30s)
+
+Returns `bytes`.
 
 ### `await swarm.destroy()`
 
@@ -138,6 +148,89 @@ Graceful shutdown. Notifies peers and closes the socket.
 | `disconnect` | `peer_id` | peer dropped |
 | `sync` | `key, value` | value received from network |
 | `nat` | — | public address discovered |
+
+---
+
+## Persistent storage
+
+By default, `store()` and `fetch()` only use an in-memory LRU cache — data is lost when the process exits.
+
+To persist data across restarts, pass a `storage` object with async `get` and `set` methods:
+
+```python
+swarm = Swarm({'storage': my_backend})
+```
+
+The backend must implement:
+
+```python
+async def get(self, key: str) -> bytes | None: ...
+async def set(self, key: str, value: bytes) -> None: ...
+```
+
+Any async key-value store works. Examples:
+
+**aiosqlite**
+```python
+import aiosqlite
+
+class SQLiteStorage:
+    def __init__(self, path):
+        self._path = path
+        self._db   = None
+
+    async def open(self):
+        self._db = await aiosqlite.connect(self._path)
+        await self._db.execute('CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v BLOB)')
+        await self._db.commit()
+
+    async def get(self, key):
+        async with self._db.execute('SELECT v FROM kv WHERE k = ?', (key,)) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+    async def set(self, key, value):
+        await self._db.execute('INSERT OR REPLACE INTO kv (k, v) VALUES (?, ?)', (key, value))
+        await self._db.commit()
+
+storage = SQLiteStorage('data.db')
+await storage.open()
+swarm = Swarm({'storage': storage})
+```
+
+**aiofiles (plain JSON file — simple, not for large data)**
+```python
+import aiofiles
+import json
+import os
+
+class JSONStorage:
+    def __init__(self, path):
+        self._path = path
+
+    async def get(self, key):
+        try:
+            async with aiofiles.open(self._path, 'r') as f:
+                data = json.loads(await f.read())
+            v = data.get(key)
+            return bytes.fromhex(v) if v else None
+        except Exception:
+            return None
+
+    async def set(self, key, value):
+        try:
+            async with aiofiles.open(self._path, 'r') as f:
+                data = json.loads(await f.read())
+        except Exception:
+            data = {}
+        data[key] = value.hex()
+        async with aiofiles.open(self._path, 'w') as f:
+            await f.write(json.dumps(data))
+
+swarm = Swarm({'storage': JSONStorage('store.json')})
+```
+
+If no `storage` is provided, the library works fine — values that aren't in memory will be fetched from the network instead.
 
 ---
 
