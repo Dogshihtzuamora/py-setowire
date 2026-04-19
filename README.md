@@ -161,6 +161,7 @@ The wire protocol is plain UDP. Each packet starts with a 1-byte frame type:
 Handshake is two frames: `0xA1` (hello) and `0xA2` (hello ack). Each carries the sender's ID and raw X25519 public key. After that, all data is encrypted.
 
 The session key derivation label is `p2p-v12-session`. The peer with the lexicographically lower ID uses the first 32 bytes as send key; the other peer flips them.
+For cross-runtime compatibility, that ordering uses the on-wire ID prefix (first 8 bytes / 16 hex chars). If two peers ever collide on that prefix, Python falls back to lexicographic ordering of full X25519 public keys.
 
 ---
 
